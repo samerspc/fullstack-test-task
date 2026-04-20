@@ -1,38 +1,70 @@
 services:
+  backend-db:
+    image: postgres:17-alpine
+    container_name: backend-db
+    env_file: ".env.dev"
+    ports:
+      - "5433:5432"
+    volumes:
+      - backend-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-redis:
+    image: redis:7-alpine
+    container_name: backend-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-migrate:
+    build: ./backend
+    container_name: backend-migrate
+    command: ["alembic", "upgrade", "head"]
+    env_file: ".env.dev"
+    volumes:
+      - ./backend:/backend
+    depends_on:
+      backend-db:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build: ./backend
     command: uvicorn src.app:app --host 0.0.0.0 --reload --port 8000
     container_name: backend
-    volumes:
-      - ./backend:/backend
     env_file: ".env.dev"
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend:/backend
     depends_on:
-      - backend-db
+      backend-db:
+        condition: service_healthy
+      backend-redis:
+        condition: service_healthy
+      backend-migrate:
+        condition: service_completed_successfully
 
   backend-worker:
     build: ./backend
-    command: [ 'celery', '-A', 'src.tasks.celery_app', 'worker', '-l', 'info' ]
+    command: ["celery", "-A", "src.tasks.celery_app:celery_app", "worker", "-l", "info"]
     container_name: backend-worker
     env_file: ".env.dev"
     volumes:
       - ./backend:/backend
     depends_on:
-      - backend-db
-
-  backend-db:
-    image: postgres:latest
-    container_name: backend-db
-    ports:
-      - "5433:5433"
-    env_file: ".env.dev"
-    volumes:
-      - backend-db-volume:/var/lib/postgresql
-
-  backend-redis:
-    image: redis:latest
-    container_name: backend-redis
+      backend-db:
+        condition: service_healthy
+      backend-redis:
+        condition: service_healthy
+      backend-migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:
@@ -41,6 +73,8 @@ services:
     container_name: frontend
     ports:
       - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
 
 volumes:
   backend-db-volume:
